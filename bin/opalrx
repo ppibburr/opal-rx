@@ -1,0 +1,108 @@
+#!/usr/bin/env ruby
+
+`mkdir -p ./dist`
+
+require 'opal'
+
+if ARGV.empty?
+  ARGV << "-a"
+end
+
+File.open("./.opal", "w") do |f| f.puts "require 'opal';require 'native';module RX; VERSION='0.1.0'; end" end
+
+def opal source, dest=File.expand_path("./dist/opal-generated.js")
+  puts "OPAL: #{source} -> #{dest}"
+  
+  File.open(dest,'wb') do |f|
+    f.puts `opal -c #{source}`
+  end
+end
+
+def compile source, dest=nil
+  js = Opal.compile(open(File.expand_path(source)).read)
+  if dest
+    puts "COMPILE: #{source} -> #{dest}"
+  else
+    js
+  end
+end
+
+if ARGV.index("-n")
+  puts "Initializing app..."
+  
+  ARGV << "-o"
+  ARGV << "-a"
+  ARGV << "-i"
+  
+  File.open("index.html", "wb") do |f|
+    f.puts DATA.read
+  end
+end
+
+if i=ARGV.index("-i")
+  puts "Create: #{dest = "./dist/opal-rx.js"}"
+
+  ARGV.delete("-o")
+  
+  src = compile File.join(File.dirname(__FILE__), "..", "opal", "rx.rb")
+
+ 
+
+ File.open(dest, "w") do |f|
+    f.puts src
+  end
+end
+
+if i=ARGV.index("-o")
+  puts "Create: #{dest = "./dist/opal.js"}"
+
+  ARGV.delete("-o")
+  
+  opal "./.opal", File.expand_path(dest)
+end
+
+def app
+  puts "Create: ./dist/app.rb.js ..."
+
+  src = compile "./app.rb"
+  File.open("./dist/app.rb.js", "w") do |f|
+    f.puts src
+  end
+end
+
+if ARGV.index("-a")
+  ARGV.delete("-a")
+  
+  app
+end
+
+if i=ARGV.index("-c")
+  source = ARGV[i+1]
+  
+  compile source, "./dist/#{File.basename(source)}.js"
+end
+
+__END__
+<!doctype html>
+<html>
+<head>
+  <title></title>
+  <style>
+    html, body, .app-container {
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      border: none;
+      margin: 0;
+      font-family: proxima-nova, "Helvetica Neue", Helvetica, Roboto, Arial, sans-serif
+    }
+    *:focus {
+        outline: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container"></div>
+  <script src="dist/bundle.js"></script>
+</body>
+</html>
