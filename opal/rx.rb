@@ -3,10 +3,61 @@ require 'native'
 
 
 def p o
-  `console.log(#{o.inspect})`
+  if `o.$inspect`
+    out = o.inspect
+  else
+    out = `o.toString()`
+  end
+
+  `console.log(#{out.split("\n").map do |l| "OpalRX: #{l}" end.join("\n")})`
 end
 
 module RX
+    `function OpalRXJsonReq(uri, b) {
+    return fetch(uri)
+      .then((response) => response.json())
+      .then((responseJson) => {
+        b({object: responseJson});
+      })
+      .catch((error) => {
+        b({err: error});
+      });
+    }` 
+    
+    def self.alert msg, title: "OpalRX -"
+      `RX.Alert.show(#{title}, #{msg})`
+    end
+    
+    class JSONRequest
+      attr_reader :b, :uri, :response
+      def initialize uri, &b
+        @uri = uri
+        @b = proc do |resp|
+        `console.log(#{resp})`
+          @response = Hash.new(resp)
+          b.call self
+        end
+        
+        `OpalRXJsonReq(#@uri, #@b)`
+      end
+      
+      def error
+        @response[:error]
+      end
+      
+      def error?
+        !!error
+      end
+      
+      def object
+        @response[:object]
+      end
+    end
+    
+  def self.json_req uri, &b
+    JSONRequest.new(uri, &b)
+  end
+
   def self.map
     @map ||= {}
   end
@@ -15,38 +66,97 @@ module RX
     def self.create_view_style opts={}
       `RX.Styles.createViewStyle(#{opts.to_n})`  
     end      
-    
-    def [] k
-      @h[k]
-    end
-    
-    def method_missing m,*o,&b
-      return @h[m.to_sym] if @h.has_key?(m.to_sym)
-    
-      super
-    end
-    
-    def initialize h={}
-      @h={}
+
+    attr_reader :inherit
+    def initialize(h={})
+      @h = {}
+      @inherit = (h.delete(:inherit) || {})
       merge h
     end
     
     def merge h={}
       h.each_pair do |k,v|
-        if !(v.find do |kk,vv| vv.is_a?(Hash) end)
-          @h[k] = RX.style(v)
+        if v.is_a?(Hash)
+          if self[k].is_a?(Styles)
+            @h[k] ? @h[k].merge(v) : (@h[k] = self[k].clone(v))
+          else
+            if self[k]
+              n = {}
+            
+              Hash.new(self[k].to_n).each_pair do |kk,vv|
+                n[kk] = vv
+              end
+              
+              v.each_pair do |kk,vv|
+                n[kk] = vv
+              end
+              p n
+              @h[k] = Native(RX.style(n))
+            else
+              @h[k] = Native(RX.style(v))
+            
+            end
+          end
         else
-          @h[k] = Styles.new(v)
+          @h[k] = v
         end
+        
       end
-      
-      @h
+
+      self
     end
     
-    def delete(k)
-      @h.delete(k)
-    end    
+    def clone h={}
+      Styles.new(inherit: self).merge(h)
+    end
+    
+    def [] k
+      @h.has_key?(k) ? @h[k] : inherit[k]
+    end
+    
+    def []= k,v
+      merge({k=>v})
+    end
+    
+    def keys
+      @h.keys
+    end
+    
+    def each_pair &b
+      @h.each_pair &b
+    end
+    
+    def each &b
+      @h.each &b
+    end
+    
+    def map &b
+      @h.map &b
+    end
+    
+    def has_key? k
+      @h.has_key?(k) or inherit.has_key?(k)
+    end
+    
+    def delete k
+      @h.delete k
+    end
+    
+    def replace h={}, inherit: {}
+      @h = {}
+      @inherit = inherit
+      merge h
+    end
+    
+    def method_missing m,*o,&b
+      has_key?(m.to_sym) ? self[m.to_sym].to_n : super
+    end
+    
+    def to_n
+      self
+    end
   end
+       
   
   def self.style o={}
     Styles.create_view_style(o)
@@ -86,16 +196,28 @@ module RX
       @default_state
     end
 
-    def self.styles h=nil
-      (@styles||=Styles.new)
+    def self.styles h={}
+      (@styles||=Styles.new(inherit: (h.delete(:inherit) || {})))
       
       @styles.merge h if h
       
       return @styles
     end
     
-    def style
-      self.class.styles
+    def self.style h={}
+      Styles.new(h)
+    end
+    
+    def style h=nil
+      unless @style
+        hh = props[:style] || {}
+        hh[:inherit] = self.class.styles
+        @style = Styles.new(hh)
+      end
+      
+      @style.merge h if h
+      
+      @style
     end
 
     def self.jsx *o, &b
@@ -106,17 +228,20 @@ module RX
       
       b = nil
       
-      self.present(self::Base, opts, parent, &b)
+      e = self.present(self::Base, opts, parent, &b)
+      
+      e.style opts[:style]
+      
+      e
     end
     
     def self.replace_text(children, style_sheet=nil)
       children = [children].flatten
-
           `var h = {};
           
           if (style_sheet) {
             h = {style: #{style_sheet.text}};
-          }` if style_sheet
+          }` if style_sheet[:text]
       
       
       a = []
@@ -158,23 +283,60 @@ module RX
       (a[1..-1].map do |q| q.capitalize end.join)
     end
     
+    def self.merge_styles prop, parent
+      style = Styles.new
+      style.merge parent.style if parent
+
+      style.merge prop if prop
+      
+      style
+    end
+    
+    def self.rb?(o); `!!o['$$id']` end
+    
     def self.present what, opts={}, parent=nil, &b
       children = b.call if b
       
-      style =  opts[:style] || (parent ? parent.style : nil)
-
-      children = replace_text(children, style)  unless what == `RX.Text`
+      style = rb?(opts[:style]) ? opts[:style] : nil
+      
+      if !style and parent
+        style = parent.style
+      elsif !style and !parent
+        style = {}
+      elsif !parent and style
+       
+      end
+      
+      style ||= {}
+      
+      children = replace_text(children,style)  unless what == `RX.Text`
+      
+      children = nil if children.is_a?(Array) and children.empty?
+      
+      children = `null` if !children
       
       props={}
       
       opts.each_pair do |k,v| props[k]=v end
-      props[:style] = opts[:style].container if opts[:style].is_a?(Styles)
+
+      if !props[:opal]
+        if rb?(props[:style]) and props[:style].is_a?(Styles) and props[:style][:container]
+          props[:style] = props[:style].container
+        else
+          props[:style] = parent.style[:container] if parent
+        end
+      else
+      end
       
       e = RX.create_element(what, props, children)
     
       events opts do |k|
         e.on(:"#{camel_case(k).to_s}") {
-          opts[k].is_a?(Symbol) ? (parent ? parent.send(opts[k]) : send(opts[k])) : opts[k].call
+          a=[opts[k]]
+          
+          a << (e.native[:opal] ? e.native[:opal] : e) if parent and parent.method(a[0].to_sym).arity > 0
+          
+          opts[k].is_a?(Symbol) ? (parent ? parent.send(*a) : send(opts[k])) : opts[k].call(e)
         } 
       end
       
@@ -193,6 +355,16 @@ module RX
       `#@rx.state = #{self.class.state.to_n}`
     end
     
+    def on_mount &b
+      if b
+        @on_mount = b
+      else
+        @on_mount.call if @on_mount
+      end
+      
+      self
+    end
+ 
     def render
       b = props()[:block]
       children = b.call self if b
@@ -224,7 +396,7 @@ module RX
   
   def self.Text *o, &b
     parent, props = Component.build_args(*o)
-    
+    b = proc do props[:text] end if props[:text]
     Component.present(`RX.Text`, props, parent, &b)
   end
 
@@ -336,31 +508,168 @@ module RX
   end
   
   class Element
-    attr_accessor :native
-    def initialize what, opts={}, children=[]
+    def initialize what, opts={}, children=nil
       @opts, @what, @children = opts,what,children 
     end
     
+    def native
+      unless @native
+        if @children and `#{@children} != null`
+          @native = (Native(`RX.createElement(#{@what}, #{@opts.to_n}, #{@children.to_n})`))    
+    
+        else
+          @native = (Native(`RX.createElement(#{@what}, #{@opts.to_n})`)) 
+        end
+      end
+      
+      @native
+    end
+    
     def to_n
-      @native ||= (Native(`RX.createElement(#{@what}, #{@opts.to_n}, #{@children.to_n})`)).to_n
+      native.to_n
     end
     
     def on e, &b
-      (@opts||={})[:"on#{e.capitalize}"] = b.to_n
+      (@opts||={})[:"on#{e.capitalize}"] = proc do
+        b.call @native 
+      end.to_n
       
       self
     end
+    
+    def style h=nil
+      if o=native[:opal]
+        o.style h
+      else
+        # `console.log("NOOP 'RX.Component' Wrapper#style");`
+      end
+    end
   end
   
-  def self.create_element what, opts={}, children=[]
+  def self.create_element what, opts={}, children=nil
     e=Element.new(what, opts, children)  
   end
 
   def self.app(&b)
-    @block = proc do
-      class_eval(&b)
+    @block = proc do |a|
+      instance_exec(a, &b)
     end
     
     `OpalRender =  #{@block}`
+  end
+  
+  class Navigator
+    SceneConfig = {
+      float_from_right: "FloatFromRight",
+      float_from_left: "FloatFromLeft",
+      fade:             "Fade"
+    }
+      
+    attr_reader :navigator
+    def initialize style: `undefined`
+      @ref = proc do |n|
+        on_ref(n)
+      end
+    
+      @render = proc do |opts|
+        s = render_scene(Native(opts))
+        s ? s.to_n : `null`
+      end
+
+      opts = `{ref: #{@ref}, renderScene: #@render, cardStyle: #{style}}`
+    
+      @native = Native(`window.OpalNav(#{opts})`)
+    end
+    
+    def render_scene opts={}; end
+    
+    def on_ref n
+      @navigator = Native(n)
+    end
+    
+    def render &b
+      RX.build &b
+    end
+    
+    def to_n
+      @native.to_n
+    end
+    
+    def nav to, transition: :float_from_right, data: nil
+      
+      `#{@navigator.to_n}.push({
+            routeId: #{to},
+            sceneConfigType: #{SceneConfig[transition] || transition},
+            data: #{data}
+      })`  
+      
+      true
+    end
+    
+    def back
+      `#{@navigator.to_n}.pop()`
+    end
+    
+    def init opts = {}
+      o={routeId: "main", sceneConfigType: "FloatFromRight"}
+      
+      opts.each_pair do |k,v|
+        o[k] = v
+      end
+      
+      `#{@navigator.to_n}.immediatelyResetRouteStack([#{o.to_n}])`
+    end
+  end
+  
+  def self.img(path)
+    p path
+    return path if RX::Platform::TYPE == 'web'
+    `window.OpalAppGetImage(#{path})`
+  end
+  
+  module Platform
+    TYPE = `RX.Platform.getType()`
+  end
+  
+  class FlexList < RX::Component
+    styles(
+      list: {
+        display: 'flex',
+        flex: 0,
+        flexDirection: 'row',
+        flexWrap: "wrap"
+      }    
+    )
+    
+    def render
+      RX.ScrollView(self) {
+        RX.View(style: style.list) {
+          super
+        }
+      }
+    end
+  end
+  
+  def self.FlexList(*o,&b)
+    FlexList.jsx(*o, &b)
+  end
+
+  class ListView < RX::Component
+    styles(
+      list: {
+        display: 'flex',
+        flex: 0,
+      }   
+    )
+    
+    def render
+      RX.ScrollView(self) {
+        RX.View(style: style.list) {super}
+      }
+    end
+  end
+  
+  def self.ListView(*o,&b)
+    ListView.jsx(*o, &b)
   end
 end

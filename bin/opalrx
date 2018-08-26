@@ -1,12 +1,41 @@
 #!/usr/bin/env ruby
 
+if ARGV.empty?
+  ARGV << "-h"
+end
+
+if ARGV.index("-h")
+  puts """
+opalrx - Opal ReactXP application tool
+
+USAGE:  
+opalrx <-a|-i|-o|-n|-c FILE|-W|-D|-R|-S>
+
+Options:
+-n          initialize new app (-o -i -a -W)
+-o          recompile opal
+-i          recompile OpalRX
+-a          recompile app
+-c FILE     compile FILE
+-W          update web bundle
+-D          build debug APK
+-R          build release APK
+-S          Start metro bundle service
+-s          Start web server
+
+-R|-A|-D results incompatible for web. MUST run with -W
+-W       compatible for android, but image urls are not
+
+-a|-i|-o|-c updates immediately for -s and -S
+  """
+  
+  exit
+end
+
 `mkdir -p ./dist`
+`mkdir -p ./assets`
 
 require 'opal'
-
-if ARGV.empty?
-  ARGV << "-a"
-end
 
 File.open("./.opal", "w") do |f| f.puts "require 'opal';require 'native';module RX; VERSION='0.1.0'; end" end
 
@@ -27,12 +56,53 @@ def compile source, dest=nil
   end
 end
 
+def app
+  puts "Create: ./dist/app.rb.js ..."
+
+  src = compile "./app.rb"
+  File.open("./dist/app.rb.js", "w") do |f|
+    f.puts src
+  end
+end
+
+if false #ARGV.index() do |q| q =~ /-(R|A|D|W)/ end
+File.open("./dist/app-images.js", "w") do |f|
+	if ARGV.index() do |q| q =~ /-(R|A|D)/ end
+	  f.puts "var a = []; window.OpalAppImages = a;"
+	  f.puts "if (RX.Platform.getType() != 'web') {"
+	  Dir.glob("./assets/*.png").each_with_index do |i,idx|
+		f.puts "a.push({key: './assets/#{File.basename(i)}', val: require('../assets/#{File.basename(i)}')})"
+	  end
+	  f.puts """}
+	  
+	  window.OpalAppGetImage = function(path) {
+		if (RX.Platform.getType() == 'web') {
+		  return path;
+		}
+	  
+		a = window.OpalAppImages;
+		for (i=0; i < a.length; i++) {
+		  if (a[i].key == path) {
+			return a[i].val;
+		  }
+		}
+	  }
+	  """
+	  
+	  puts "Target set to ANDROID"
+  else
+    puts "Target set to WEB"
+  end
+  end
+end
+
 if ARGV.index("-n")
   puts "Initializing app..."
   
   ARGV << "-o"
   ARGV << "-a"
   ARGV << "-i"
+  ARGV << "-W"
   
   File.open("index.html", "wb") do |f|
     f.puts DATA.read
@@ -61,14 +131,6 @@ if i=ARGV.index("-o")
   opal "./.opal", File.expand_path(dest)
 end
 
-def app
-  puts "Create: ./dist/app.rb.js ..."
-
-  src = compile "./app.rb"
-  File.open("./dist/app.rb.js", "w") do |f|
-    f.puts src
-  end
-end
 
 if ARGV.index("-a")
   ARGV.delete("-a")
@@ -80,6 +142,29 @@ if i=ARGV.index("-c")
   source = ARGV[i+1]
   
   compile source, "./dist/#{File.basename(source)}.js"
+end
+
+if ARGV.index("-W")
+  puts "You may exit 'web-watch' once completed\n  modifications from `-a` are instant in web mode\n\nWaiting 5s ..."
+  sleep 5
+  system "npm run web-watch"
+end
+
+# Release APK
+if ARGV.index("-R")
+  puts "Generating release APK"
+  system "cd android && ./gradlew assembleRelease"
+end
+
+# Debug APK
+if ARGV.index("-D")
+  puts "Generating debug APK"
+  system "npm run android"
+end
+
+# Serve Metro
+if ARGV.index("-S")
+  system "npm start"
 end
 
 __END__
